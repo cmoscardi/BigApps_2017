@@ -24,6 +24,7 @@ class BaseLED(object):
         self.parser.add_argument("--led-slowdown-gpio", action="store", help="Slow down writing to GPIO. Range: 0..4. Raspberry Pi 4 usually needs 4.", choices=range(5), type=int)
         self.parser.add_argument("--led-no-hardware-pulse", action="store_true", help="Don't use hardware pin-pulse generation")
         self.parser.add_argument("--led-no-drop-privileges", action="store_true", help="Don't drop privileges from 'root' after initializing the hardware.")
+        self.parser.add_argument("--led-limit-refresh", action="store", help="Limit refresh rate to this frequency in Hz. Keeps a constant refresh rate on a loaded system. 0=no limit. Default: 0", default=0, type=int)
 
 
     def usleep(self, value):
@@ -56,6 +57,8 @@ class BaseLED(object):
             options.disable_hardware_pulsing = True
         if self.args.led_no_drop_privileges:
             options.drop_privileges = False
+        if self.args.led_limit_refresh:
+            options.limit_refresh_rate_hz = self.args.led_limit_refresh
 
         self.matrix = RGBMatrix(options = options)
 
