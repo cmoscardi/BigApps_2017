@@ -29,15 +29,31 @@ FEED = NS(entity=[
 
 
 class SubwayTest(unittest.TestCase):
-    def test_stop_and_route(self):
-        self.assertEqual(subway.STOP_ID, "F23N")
-        self.assertEqual(subway.ROUTE_IDS, ("F",))
+    def test_stops(self):
+        self.assertEqual(subway.STOPS["F"][1], "F23N")
+        self.assertEqual(subway.STOPS["R"][1], "R33N")
+        self.assertTrue(subway.STOPS["F"][0].endswith("nyct%2Fgtfs-bdfm"))
+        self.assertTrue(subway.STOPS["R"][0].endswith("nyct%2Fgtfs-nqrw"))
 
     def test_arrival_times_filters_route_and_direction(self):
-        self.assertEqual(subway.arrival_times(FEED), [NOW - 600, NOW + 200, NOW + 660])
+        self.assertEqual(subway.arrival_times(FEED, "F23N", "F"), [NOW - 600, NOW + 200, NOW + 660])
+
+    def test_arrival_times_r(self):
+        feed = NS(entity=[
+            trip("R", stu("R33N", NOW + 300)),
+            trip("N", stu("R33N", NOW + 100)),   # wrong route (doesn't stop here, but filter anyway)
+            trip("R", stu("R33S", NOW + 50)),    # Bay Ridge-bound
+            trip("F", stu("F23N", NOW + 120)),
+        ])
+        self.assertEqual(subway.arrival_times(feed, "R33N", "R"), [NOW + 300])
+
+    def test_route_arrivals_uses_line_feed_and_stop(self):
+        with mock.patch("subway.fetch_feed", return_value=FEED) as fetch:
+            self.assertEqual(subway.route_arrivals("F"), [NOW - 600, NOW + 200, NOW + 660])
+        fetch.assert_called_once_with(subway.STOPS["F"][0])
 
     def test_minutes_away(self):
-        times = subway.arrival_times(FEED)
+        times = subway.arrival_times(FEED, "F23N", "F")
         self.assertEqual(subway.minutes_away(times, now=NOW), [3, 11])
         self.assertEqual(subway.minutes_away([NOW - 10], now=NOW), [0])
 
@@ -57,8 +73,8 @@ class SubwayTest(unittest.TestCase):
         resp = mock.Mock(content=b"pb-bytes")
         with mock.patch.dict(sys.modules, fake_mods), \
                 mock.patch("subway.requests.get", return_value=resp) as get:
-            subway.fetch_feed()
-        self.assertEqual(get.call_args.args[0], subway.FEED_URL)
+            subway.fetch_feed(subway.STOPS["F"][0])
+        self.assertEqual(get.call_args.args[0], subway.STOPS["F"][0])
         self.assertNotIn("headers", get.call_args.kwargs)  # no API key needed
         self.assertEqual(parsed, [b"pb-bytes"])
 

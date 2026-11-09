@@ -10,10 +10,15 @@ class Canvas(object):
     def __init__(self):
         self.texts = []
         self.circles = []
+        self.pixels = {}
 
     def Clear(self):
         self.texts = []
         self.circles = []
+        self.pixels = {}
+
+    def SetPixel(self, x, y, r, g, b):
+        self.pixels[(x, y)] = (r, g, b)
 
 
 class RGBMatrix(object):
@@ -21,6 +26,7 @@ class RGBMatrix(object):
         self.options = options
         self.frames = []  # one list of (font_file, x, y, text) per SwapOnVSync
         self.circle_frames = []  # one list of (x, y, r, rgb) per SwapOnVSync
+        self.pixel_frames = []  # one {(x, y): rgb} per SwapOnVSync
 
     def CreateFrameCanvas(self):
         return Canvas()
@@ -28,4 +34,5 @@ class RGBMatrix(object):
     def SwapOnVSync(self, canvas):
         self.frames.append(list(canvas.texts))
         self.circle_frames.append(list(canvas.circles))
+        self.pixel_frames.append(dict(canvas.pixels))
         return Canvas()

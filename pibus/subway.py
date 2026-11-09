@@ -3,15 +3,19 @@ import time
 
 import requests
 
-# B, D, F, M feed.
-FEED_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm"
-# 4 Av-9 St (F/G). The "N" suffix is northbound, which for the F is Manhattan-bound.
-STOP_ID = "F23N"
-# The G also stops at F23N, so filter on route.
-ROUTE_IDS = ("F",)
+FEED_BASE = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2F"
+
+# Manhattan-bound stops at 4 Av-9 St, by route: (feed URL, stop ID).
+# The F/G platform (F23) and the R platform (R33) have separate stop IDs.
+# The "N" suffix is northbound, which for both lines here is Manhattan-bound.
+# The G also stops at F23N; arrival_times() filters on route, so it drops out.
+STOPS = {
+    "F": (FEED_BASE + "gtfs-bdfm", "F23N"),
+    "R": (FEED_BASE + "gtfs-nqrw", "R33N"),
+}
 
 
-def fetch_feed(url=FEED_URL):
+def fetch_feed(url):
     from google.transit import gtfs_realtime_pb2
 
     resp = requests.get(url, timeout=10)
@@ -21,14 +25,14 @@ def fetch_feed(url=FEED_URL):
     return feed
 
 
-def arrival_times(feed, stop_id=STOP_ID, route_ids=ROUTE_IDS):
-    """Sorted POSIX arrival times at stop_id for the given routes."""
+def arrival_times(feed, stop_id, route_id):
+    """Sorted POSIX arrival times of route_id trains at stop_id."""
     times = []
     for entity in feed.entity:
         # Unset protobuf fields read as empty defaults, so non-trip-update
         # entities fall out at the route check.
         trip_update = entity.trip_update
-        if trip_update.trip.route_id not in route_ids:
+        if trip_update.trip.route_id != route_id:
             continue
         for stu in trip_update.stop_time_update:
             if stu.stop_id != stop_id:
@@ -39,17 +43,19 @@ def arrival_times(feed, stop_id=STOP_ID, route_ids=ROUTE_IDS):
     return sorted(times)
 
 
+def route_arrivals(route_id):
+    """Sorted arrival times of the next Manhattan-bound route_id trains at 4 Av-9 St."""
+    url, stop_id = STOPS[route_id]
+    return arrival_times(fetch_feed(url), stop_id, route_id)
+
+
 def minutes_away(times, now=None):
     now = time.time() if now is None else now
     return [max(0, int((t - now) // 60)) for t in times if t > now - 30]
 
 
-def next_trains(now=None):
-    """Minutes until the next Manhattan-bound F trains at 4 Av-9 St."""
-    return minutes_away(arrival_times(fetch_feed()), now=now)
-
-
 if __name__ == "__main__":
     while True:
-        print("Manhattan-bound F at 4 Av-9 St:", next_trains())
+        for route in STOPS:
+            print("Manhattan-bound %s at 4 Av-9 St:" % route, minutes_away(route_arrivals(route)))
         time.sleep(30)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# Show the next Manhattan-bound F trains at 4 Av-9 St: an F in an orange ring,
-# then, stacked on the right, the minutes until the next F and the F after it.
-# The screen stays put and only the numbers change as the trains get closer. Every 5 minutes a train drives across.
+# Show the next Manhattan-bound F and R trains at 4 Av-9 St, one line per row:
+# a line badge (orange F, yellow R), then the minutes until the next train and
+# the train after it. The screen stays put and only the numbers change as the
+# trains get closer. Every 5 minutes a train drives across.
 # When the room is dark (light sensor on GPIO21 reads 1), the panel dims.
 import os
 import time
@@ -17,24 +18,40 @@ from rgbmatrix import graphics
 import subway
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FONT = "6x10.bdf"
+FONT = "4x6.bdf"  # Glyphs are 3 px wide, 5 px tall, on a 4 px advance.
 
 # How often to pull the MTA feed, and how often to recount minutes from the
 # arrival times we already have.
 FETCH_SECS = 30
 REDRAW_SECS = 5
 
-F_ORANGE = (255, 99, 25)  # MTA F line orange, #FF6319.
+F_ORANGE = (255, 99, 25)   # MTA F line orange, #FF6319.
+R_YELLOW = (252, 204, 10)  # MTA R line yellow, #FCCC0A.
 WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
 
-# Layout for a 32x16 panel: ring on the left half, minutes on the right half.
-RING_X, RING_Y, RING_R = 7, 8, 7
-F_X, F_Y = 5, 12              # 6x10 "F" is 5 px wide, 7 px tall: centered in the ring.
-MIN_LEFT, MIN_WIDTH = 16, 16  # Right half of the panel.
-# Baselines for the next train (top) and the one after (bottom). 6x10 digits
-# are 7 px tall, so they fill rows 1-7 and 9-15, level with the ring.
-MIN_YS = (8, 16)
-CHAR_W = 6
+# One row per line, top to bottom: (route ID, badge color).
+LINES = (("F", F_ORANGE), ("R", R_YELLOW))
+
+# Layout for a 32x16 panel: two rows, each 8 px tall.
+# Row: 7x7 badge at x 0-6, then two minute slots, each 2 chars wide.
+ROW_TOPS = (0, 8)
+BASELINE = 6         # Glyphs fill rows top+1..top+5, level with the badge center.
+LETTER_X = 2         # Centers the 3 px letter in the 7 px badge.
+MIN_XS = (12, 23)    # Left edge of the next-train and train-after slots.
+CHAR_W = 4
+SLOT_W = 2 * CHAR_W  # Labels are right-aligned in the slot so the ones digits line up.
+
+# The badge is a filled disc; the route letter is cut out of it in black.
+BADGE = [
+    "..###..",
+    ".#####.",
+    "#######",
+    "#######",
+    "#######",
+    ".#####.",
+    "..###..",
+]
 
 # Train animation: how often it plays, and how long each 1 px step takes.
 TRAIN_EVERY_SECS = 5 * 60
@@ -87,7 +104,7 @@ def train_sprite(cars=TRAIN_CARS):
     return rows
 
 
-def minutes_labels(minutes, count=len(MIN_YS)):
+def minutes_labels(minutes, count=len(MIN_XS)):
     """Minutes until each of the next `count` trains, e.g. ["4", "12"].
 
     "--" stands in for a train that isn't coming.
@@ -101,7 +118,7 @@ class RunText(BaseLED):
         super(RunText, self).__init__(*args, **kwargs)
         self.parser.add_argument("--font-dir", help="Directory that holds %s. Default: the first fonts/ dir found in this script's folder or a parent folder." % FONT)
         self.parser.add_argument("--dim-brightness", type=int, default=DIM_BRIGHTNESS, help="Brightness (1..100) when the room is dark. Default: %d" % DIM_BRIGHTNESS)
-        self.arrivals = []
+        self.arrivals = {route: [] for route, _ in LINES}
         self.last_fetch = None
         self.brightness = 100
         # Set up the sensor now, before process() creates the matrix: the
@@ -145,15 +162,18 @@ class RunText(BaseLED):
         now = time.time() if now is None else now
         if self.last_fetch is None or now - self.last_fetch >= FETCH_SECS:
             self._fetch(now)
-        self._draw(minutes_labels(subway.minutes_away(self.arrivals, now=now)))
+        self._draw([minutes_labels(subway.minutes_away(self.arrivals[route], now=now))
+                    for route, _ in LINES])
 
     def _fetch(self, now):
-        # On failure, keep the old arrival times; they keep counting down.
+        # Each line has its own feed. If one fails, keep that line's old
+        # arrival times; they keep counting down.
         self.last_fetch = now
-        try:
-            self.arrivals = subway.arrival_times(subway.fetch_feed())
-        except Exception as e:
-            print("Subway fetch failed: %s" % e)
+        for route, _ in LINES:
+            try:
+                self.arrivals[route] = subway.route_arrivals(route)
+            except Exception as e:
+                print("%s fetch failed: %s" % (route, e))
 
     def _is_dark(self):
         return self.sensor_ready and GPIO.input(LIGHT_SENSOR_PIN) == DARK
@@ -169,14 +189,22 @@ class RunText(BaseLED):
         self.canvas.Clear()
         self.canvas.brightness = self.brightness
 
-    def _draw(self, labels):
+    def _draw(self, rows):
+        """rows: the minutes labels for each line in LINES, top to bottom."""
         self._clear()
-        graphics.DrawCircle(self.canvas, RING_X, RING_Y, RING_R, self.ring_color)
-        graphics.DrawText(self.canvas, self.font, F_X, F_Y, self.text_color, "F")
-        for label, y in zip(labels, MIN_YS):
-            x = MIN_LEFT + max(0, (MIN_WIDTH - CHAR_W * len(label)) // 2)
-            graphics.DrawText(self.canvas, self.font, x, y, self.text_color, label)
+        for (route, rgb), labels, top in zip(LINES, rows, ROW_TOPS):
+            self._draw_badge(top, rgb)
+            graphics.DrawText(self.canvas, self.font, LETTER_X, top + BASELINE, self.cutout_color, route)
+            for label, left in zip(labels, MIN_XS):
+                x = left + max(0, SLOT_W - CHAR_W * len(label))
+                graphics.DrawText(self.canvas, self.font, x, top + BASELINE, self.text_color, label)
         self.canvas = self.matrix.SwapOnVSync(self.canvas)
+
+    def _draw_badge(self, top, rgb):
+        for dy, row in enumerate(BADGE):
+            for dx, ch in enumerate(row):
+                if ch == "#":
+                    self.canvas.SetPixel(dx, top + dy, *rgb)
 
     def _set_screen_params(self):
         font_dir = self.args.font_dir or find_font_dir()
@@ -185,7 +213,7 @@ class RunText(BaseLED):
         self.canvas = self.matrix.CreateFrameCanvas()
         self.font = graphics.Font()
         self.font.LoadFont(os.path.join(font_dir, FONT))
-        self.ring_color = graphics.Color(*F_ORANGE)
+        self.cutout_color = graphics.Color(*BLACK)
         self.text_color = graphics.Color(*WHITE)
         self.brightness = self.args.led_brightness
 
