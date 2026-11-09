@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Show the next Manhattan-bound F train at 4 Av-9 St: an F in an orange ring,
 # then the minutes until it arrives. The screen stays put and only the number
-# changes as the train gets closer.
+# changes as the train gets closer. Every 5 minutes a train drives across.
 import os
 import time
 
@@ -29,6 +29,30 @@ MIN_LEFT, MIN_WIDTH = 16, 16  # Right half of the panel.
 MIN_Y = 13
 LARGE_CHAR_W = 7
 
+# Train animation: how often it plays, and how long each 1 px step takes.
+TRAIN_EVERY_SECS = 5 * 60
+TRAIN_FRAME_SECS = 0.03
+
+# Pixel art for one car. One character is one LED; "." is off.
+TRAIN_CAR = [
+    ".SSSSSSSSSSSS.",
+    "SWWSWWSWWSWWSS",
+    "SWWSWWSWWSWWSS",
+    "SSSSSSSSSSSSSS",
+    "OOOOOOOOOOOOOO",
+    "SSSSSSSSSSSSSS",
+    ".KK........KK.",
+]
+TRAIN_CARS = 3
+TRAIN_COLORS = {
+    "S": (140, 140, 150),  # Stainless steel body.
+    "W": (255, 220, 120),  # Lit windows.
+    "O": F_ORANGE,         # Line stripe.
+    "K": (60, 60, 60),     # Wheels.
+    "L": (255, 255, 200),  # Headlight.
+}
+TRAIN_Y = 4  # Top row of the train on the panel.
+
 
 def find_font_dir(start=HERE):
     """Find rpi-rgb-led-matrix's fonts/ dir next to this file or in any parent."""
@@ -41,6 +65,13 @@ def find_font_dir(start=HERE):
         if parent == path:
             return None
         path = parent
+
+
+def train_sprite(cars=TRAIN_CARS):
+    """Rows of the whole train: cars joined by a 1 px gap, headlight up front."""
+    rows = [".".join([row] * cars) for row in TRAIN_CAR]
+    rows[1] = "L" + rows[1][1:]
+    return rows
 
 
 def minutes_label(minutes):
@@ -57,9 +88,27 @@ class RunText(BaseLED):
 
     def run(self):
         self._set_screen_params()
+        last_train = 0  # Play once at startup, then every TRAIN_EVERY_SECS.
         while True:
+            if time.time() - last_train >= TRAIN_EVERY_SECS:
+                self.animate_train()
+                last_train = time.time()
             self.run_once()
             time.sleep(REDRAW_SECS)
+
+    def animate_train(self):
+        """Drive a train across the panel from right to left. Blocks until it's gone."""
+        sprite = train_sprite()
+        width = self.matrix.width
+        for left in range(width, -len(sprite[0]) - 1, -1):
+            self.canvas.Clear()
+            for dy, row in enumerate(sprite):
+                for dx, ch in enumerate(row):
+                    x = left + dx
+                    if ch in TRAIN_COLORS and 0 <= x < width:
+                        self.canvas.SetPixel(x, TRAIN_Y + dy, *TRAIN_COLORS[ch])
+            self.canvas = self.matrix.SwapOnVSync(self.canvas)
+            time.sleep(TRAIN_FRAME_SECS)
 
     def run_once(self, now=None):
         now = time.time() if now is None else now
