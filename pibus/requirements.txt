@@ -1,0 +1,3 @@
+requests
+gtfs-realtime-bindings
+# rgbmatrix: build from https://github.com/hzeller/rpi-rgb-led-matrix (make build-python && sudo make install-python)
