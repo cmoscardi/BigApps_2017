@@ -2,8 +2,14 @@
 # Show the next Manhattan-bound F train at 4 Av-9 St: an F in an orange ring,
 # then the minutes until it arrives. The screen stays put and only the number
 # changes as the train gets closer. Every 5 minutes a train drives across.
+# When the room is dark (light sensor on GPIO21 reads 1), the panel dims.
 import os
 import time
+
+try:
+    import RPi.GPIO as GPIO
+except ImportError:  # Not on a Pi (e.g. running the tests): never dim.
+    GPIO = None
 
 from base import BaseLED
 from rgbmatrix import graphics
@@ -53,6 +59,12 @@ TRAIN_COLORS = {
 }
 TRAIN_Y = 4  # Top row of the train on the panel.
 
+# Binary light sensor between physical pins 39 (GND) and 40 (GPIO21).
+# It reads 1 when the room is dark.
+LIGHT_SENSOR_PIN = 21  # BCM numbering
+DARK = 1
+DIM_BRIGHTNESS = 20  # Percent, 1..100.
+
 
 def find_font_dir(start=HERE):
     """Find rpi-rgb-led-matrix's fonts/ dir next to this file or in any parent."""
@@ -83,13 +95,27 @@ class RunText(BaseLED):
     def __init__(self, *args, **kwargs):
         super(RunText, self).__init__(*args, **kwargs)
         self.parser.add_argument("--font-dir", help="Directory that holds %s and %s. Default: the first fonts/ dir found in this script's folder or a parent folder." % (LARGE_FONT, SMALL_FONT))
+        self.parser.add_argument("--dim-brightness", type=int, default=DIM_BRIGHTNESS, help="Brightness (1..100) when the room is dark. Default: %d" % DIM_BRIGHTNESS)
         self.arrivals = []
         self.last_fetch = None
+        self.brightness = 100
+        # Set up the sensor now, before process() creates the matrix: the
+        # matrix drops root privileges, and after that we can't open the GPIO.
+        self.sensor_ready = False
+        if GPIO is not None:
+            try:
+                GPIO.setwarnings(False)
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(LIGHT_SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                self.sensor_ready = True
+            except Exception as e:
+                print("Light sensor setup failed, will not dim: %s" % e)
 
     def run(self):
         self._set_screen_params()
         last_train = 0  # Play once at startup, then every TRAIN_EVERY_SECS.
         while True:
+            self._update_brightness()
             if time.time() - last_train >= TRAIN_EVERY_SECS:
                 self.animate_train()
                 last_train = time.time()
@@ -101,7 +127,7 @@ class RunText(BaseLED):
         sprite = train_sprite()
         width = self.matrix.width
         for left in range(width, -len(sprite[0]) - 1, -1):
-            self.canvas.Clear()
+            self._clear()
             for dy, row in enumerate(sprite):
                 for dx, ch in enumerate(row):
                     x = left + dx
@@ -124,8 +150,22 @@ class RunText(BaseLED):
         except Exception as e:
             print("Subway fetch failed: %s" % e)
 
-    def _draw(self, label):
+    def _is_dark(self):
+        return self.sensor_ready and GPIO.input(LIGHT_SENSOR_PIN) == DARK
+
+    def _update_brightness(self):
+        bright = self.args.led_brightness
+        dim = min(self.args.dim_brightness, bright)
+        self.brightness = dim if self._is_dark() else bright
+
+    def _clear(self):
+        # Brightness is applied as pixels are drawn, so set it on whichever
+        # canvas we're about to draw into (SwapOnVSync hands back the other one).
         self.canvas.Clear()
+        self.canvas.brightness = self.brightness
+
+    def _draw(self, label):
+        self._clear()
         graphics.DrawCircle(self.canvas, RING_X, RING_Y, RING_R, self.ring_color)
         graphics.DrawText(self.canvas, self.small_font, F_X, F_Y, self.text_color, "F")
         x = MIN_LEFT + max(0, (MIN_WIDTH - LARGE_CHAR_W * len(label)) // 2)
@@ -143,6 +183,7 @@ class RunText(BaseLED):
         self.small_font.LoadFont(os.path.join(font_dir, SMALL_FONT))
         self.ring_color = graphics.Color(*F_ORANGE)
         self.text_color = graphics.Color(*WHITE)
+        self.brightness = self.args.led_brightness
 
 
 # Main function
