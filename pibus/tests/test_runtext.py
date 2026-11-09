@@ -6,6 +6,8 @@ from unittest import mock
 
 import runtext
 
+NOW = 1_800_000_000
+
 
 def make_display():
     """A RunText wired to the fake matrix, with fonts 'loaded'."""
@@ -29,11 +31,10 @@ class RunTextTest(unittest.TestCase):
         self.assertEqual(rt.matrix.options.cols, 32)
         self.assertEqual(rt.large_font.path, "/fonts/7x14.bdf")
 
-    def test_train_rows(self):
-        self.assertEqual(runtext.train_rows([3, 11, 19]), ("3,11", "MIN"))
-        self.assertEqual(runtext.train_rows([0]), ("0", "MIN"))
-        self.assertEqual(runtext.train_rows([45, 120]), ("45", "MIN"))
-        self.assertEqual(runtext.train_rows([]), ("NONE", ""))
+    def test_minutes_label(self):
+        self.assertEqual(runtext.minutes_label([3, 11, 19]), "3")
+        self.assertEqual(runtext.minutes_label([0]), "0")
+        self.assertEqual(runtext.minutes_label([]), "--")
 
     def test_find_font_dir_walks_up(self):
         with tempfile.TemporaryDirectory() as root:
@@ -46,26 +47,39 @@ class RunTextTest(unittest.TestCase):
     def test_no_bus(self):
         self.assertNotIn("bus", sys.modules["runtext"].__dict__)
 
-    @mock.patch("runtext.time.sleep")
-    @mock.patch("runtext.subway.next_trains", return_value=[4, 12])
-    def test_run_once(self, *_):
+    @mock.patch("runtext.subway.fetch_feed")
+    @mock.patch("runtext.subway.arrival_times", return_value=[NOW + 250, NOW + 730])
+    def test_static_screen_counts_down(self, arrival_times, fetch_feed):
         rt = make_display()
-        rt.run_once()
-        self.assertEqual(texts(rt), [
-            ["F TO", "MANH"],
-            ["F"], ["4,12", "MIN"],
-        ])
+        rt.run_once(now=NOW)          # fetch: 4 min
+        rt.run_once(now=NOW + 5)      # no fetch, same number
+        rt.run_once(now=NOW + 70)     # refetch, one minute closer
+        self.assertEqual(arrival_times.call_count, 2)
+        self.assertEqual(texts(rt), [["F", "4"], ["F", "4"], ["F", "3"]])
+        # Orange F-line ring around the F on every frame.
+        ring = (runtext.RING_X, runtext.RING_Y, runtext.RING_R, runtext.F_ORANGE)
+        self.assertEqual(rt.matrix.circle_frames, [[ring]] * 3)
 
-    @mock.patch("runtext.time.sleep")
-    @mock.patch("runtext.subway.next_trains", side_effect=OSError("network down"))
-    def test_fetch_error_shows_no_data(self, *_):
+    @mock.patch("runtext.subway.arrival_times", return_value=[NOW + 130])
+    def test_draw_positions(self, _):
+        rt = make_display()
+        with mock.patch("runtext.subway.fetch_feed"):
+            rt.run_once(now=NOW)
+        self.assertEqual(rt.matrix.frames[0], [
+            ("6x10.bdf", runtext.F_X, runtext.F_Y, "F"),
+            ("7x14.bdf", 20, runtext.MIN_Y, "2"),   # one digit, centered in right half
+        ])
+        rt._draw(runtext.minutes_label([12]))
+        self.assertEqual(rt.matrix.frames[1][1], ("7x14.bdf", 17, runtext.MIN_Y, "12"))
+
+    @mock.patch("runtext.subway.fetch_feed", side_effect=OSError("network down"))
+    def test_fetch_error_keeps_old_times(self, _):
         rt = make_display()
         with mock.patch("builtins.print"):
-            rt.run_once()
-        self.assertEqual(texts(rt), [
-            ["F TO", "MANH"], ["NO", "DATA"],
-        ])
-
+            rt.run_once(now=NOW)      # nothing cached yet
+            rt.arrivals = [NOW + 400]
+            rt.run_once(now=NOW + 40) # fetch fails again; old time still counts down
+        self.assertEqual(texts(rt), [["F", "--"], ["F", "6"]])
 
 if __name__ == "__main__":
     unittest.main()

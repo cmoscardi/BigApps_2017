@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-# Show the next Manhattan-bound F trains at 4 Av-9 St, with double-buffering.
+# Show the next Manhattan-bound F train at 4 Av-9 St: an F in an orange ring,
+# then the minutes until it arrives. The screen stays put and only the number
+# changes as the train gets closer.
 import os
 import time
 
@@ -12,11 +14,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LARGE_FONT = "7x14.bdf"
 SMALL_FONT = "6x10.bdf"
 
-# Seconds each screen stays up.
-HEADER_SECS = 7
-LINE_NAME_SECS = 3
-TIME_SECS = 6
-CYCLE_GAP_SECS = 3
+# How often to pull the MTA feed, and how often to recount minutes from the
+# arrival times we already have.
+FETCH_SECS = 30
+REDRAW_SECS = 5
+
+F_ORANGE = (255, 99, 25)  # MTA F line orange, #FF6319.
+WHITE = (255, 255, 255)
+
+# Layout for a 32x16 panel: ring on the left half, minutes on the right half.
+RING_X, RING_Y, RING_R = 7, 8, 7
+F_X, F_Y = 5, 12              # 6x10 "F" is 5 px wide, 7 px tall: centered in the ring.
+MIN_LEFT, MIN_WIDTH = 16, 16  # Right half of the panel.
+MIN_Y = 13
+LARGE_CHAR_W = 7
 
 
 def find_font_dir(start=HERE):
@@ -32,53 +43,44 @@ def find_font_dir(start=HERE):
         path = parent
 
 
-def train_rows(minutes):
-    """Top row: up to 2 arrival times, e.g. "3,11". Bottom row: "MIN"."""
-    if not minutes:
-        return "NONE", ""
-    top = ",".join(str(m) for m in minutes[:2])
-    if len(top) > 5:  # 6x10 font: 5 characters fit across 32 columns.
-        top = str(minutes[0])
-    return top, "MIN"
+def minutes_label(minutes):
+    """Minutes until the next train, e.g. "4", or "--" if none are coming."""
+    return str(minutes[0]) if minutes else "--"
 
 
 class RunText(BaseLED):
     def __init__(self, *args, **kwargs):
         super(RunText, self).__init__(*args, **kwargs)
         self.parser.add_argument("--font-dir", help="Directory that holds %s and %s. Default: the first fonts/ dir found in this script's folder or a parent folder." % (LARGE_FONT, SMALL_FONT))
+        self.arrivals = []
+        self.last_fetch = None
 
     def run(self):
         self._set_screen_params()
         while True:
             self.run_once()
+            time.sleep(REDRAW_SECS)
 
-    def run_once(self):
-        self._show_f_train()
-        time.sleep(CYCLE_GAP_SECS)
+    def run_once(self, now=None):
+        now = time.time() if now is None else now
+        if self.last_fetch is None or now - self.last_fetch >= FETCH_SECS:
+            self._fetch(now)
+        self._draw(minutes_label(subway.minutes_away(self.arrivals, now=now)))
 
-    def _show_f_train(self):
-        self._small("F TO", "MANH")
-        time.sleep(HEADER_SECS)
+    def _fetch(self, now):
+        # On failure, keep the old arrival times; they keep counting down.
+        self.last_fetch = now
         try:
-            minutes = subway.next_trains()
+            self.arrivals = subway.arrival_times(subway.fetch_feed())
         except Exception as e:
             print("Subway fetch failed: %s" % e)
-            self._small("NO", "DATA")
-        else:
-            self._large("F")
-            time.sleep(LINE_NAME_SECS)
-            self._small(*train_rows(minutes))
-        time.sleep(TIME_SECS)
 
-    def _large(self, text):
+    def _draw(self, label):
         self.canvas.Clear()
-        graphics.DrawText(self.canvas, self.large_font, 0, 15, self.color, text)
-        self.canvas = self.matrix.SwapOnVSync(self.canvas)
-
-    def _small(self, top, bottom):
-        self.canvas.Clear()
-        graphics.DrawText(self.canvas, self.small_font, 0, 7, self.color, top)
-        graphics.DrawText(self.canvas, self.small_font, 0, 15, self.color, bottom)
+        graphics.DrawCircle(self.canvas, RING_X, RING_Y, RING_R, self.ring_color)
+        graphics.DrawText(self.canvas, self.small_font, F_X, F_Y, self.text_color, "F")
+        x = MIN_LEFT + max(0, (MIN_WIDTH - LARGE_CHAR_W * len(label)) // 2)
+        graphics.DrawText(self.canvas, self.large_font, x, MIN_Y, self.text_color, label)
         self.canvas = self.matrix.SwapOnVSync(self.canvas)
 
     def _set_screen_params(self):
@@ -90,7 +92,8 @@ class RunText(BaseLED):
         self.large_font.LoadFont(os.path.join(font_dir, LARGE_FONT))
         self.small_font = graphics.Font()
         self.small_font.LoadFont(os.path.join(font_dir, SMALL_FONT))
-        self.color = graphics.Color(255, 0, 0)
+        self.ring_color = graphics.Color(*F_ORANGE)
+        self.text_color = graphics.Color(*WHITE)
 
 
 # Main function

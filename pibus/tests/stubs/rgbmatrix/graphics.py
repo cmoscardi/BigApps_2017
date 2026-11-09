@@ -14,3 +14,7 @@ class Color(object):
 def DrawText(canvas, font, x, y, color, text):
     canvas.texts.append((font.path.rsplit("/", 1)[-1], x, y, text))
     return len(text) * 6
+
+
+def DrawCircle(canvas, x, y, r, color):
+    canvas.circles.append((x, y, r, color.rgb))
